@@ -1,0 +1,191 @@
+#!/bin/bash
+#PBS -N *Your Job Name - Group 1281*
+#PBS -A *Your Allocation Number*
+#PBS -q casper
+#PBS -l select=1:ncpus=4:mpiprocs=1:mem=300GB
+#PBS -J 1-10
+#PBS -l walltime=10:00:00
+#PBS -o /glade/derecho/scratch/*save folder*/OUTPUTFILES/output_Group1281_hist.log
+#PBS -e /glade/derecho/scratch/*save folder*/OUTPUTFILES/error_Group1281_hist.log
+
+echo "================="
+echo "₊⁺ 𓆝 𓆟 𓆞 𓆝 𓆟 ⁺₊"
+echo "================="
+
+# ----------------------------
+# Load modules
+# ----------------------------
+module load nco
+
+# Thread control
+export OMP_NUM_THREADS=2
+
+# ----------------------------
+# Paths
+# ----------------------------
+BASE="/glade/campaign/collections/gdex/data/d651056/CESM2-LE/atm/proc/tseries/hour_6"
+OUTDIR="/glade/derecho/scratch/*save folder*"
+mkdir -p ${OUTDIR}
+
+# ----------------------------
+# Ensemble definitions
+# ----------------------------
+# Each PBS_ARRAY_INDEX corresponds to one member
+# COMBO_GROUP=(1231 1231 1231 1231 1231 1231 1231 1231 1231 1231)
+ COMBO_GROUP=(1281 1281 1281 1281 1281 1281 1281 1281 1281 1281)
+# COMBO_GROUP=(1301 1301 1301 1301 1301 1301 1301 1301 1301 1301)
+ COMBO_EM=(011 012 013 014 015 016 017 018 019 020)
+ COMBO_LABEL=(E11 E12 E13 E14 E15 E16 E17 E18 E19 E20)
+
+
+# ----------------------------
+# Select ensemble member for this PBS_ARRAY_INDEX
+# ----------------------------
+IDX=$((${PBS_ARRAY_INDEX}-1))
+GROUP=${COMBO_GROUP[$IDX]}
+EM=${COMBO_EM[$IDX]}
+LABEL=${COMBO_LABEL[$IDX]}
+
+# ----------------------------
+# Debug check
+# ----------------------------
+echo "======================================"
+echo "DEBUG CHECK"
+echo "PBS_ARRAY_INDEX=${PBS_ARRAY_INDEX}, IDX=${IDX}"
+echo "GROUP=${GROUP}, EM=${EM}, LABEL=${LABEL}"
+echo "======================================"
+
+# ----------------------------
+# Output file
+# ----------------------------
+OUTFILE=${OUTDIR}/CESM2_${GROUP}_${LABEL}.nc
+rm -f ${OUTFILE}
+
+# ----------------------------
+# Variables + Years
+# ----------------------------
+VARS=(PRECT TMQ IVT PSL U850 V850 U200 OMEGA500)
+
+echo "Collecting the Historical Period"
+#Historical Years - 20 EM
+YEARS=(
+1980010100-1989123100
+1990010100-1999123100
+2000010100-2009123100
+)
+
+#YEARS=(
+#2015010100-2024123100
+#2025010100-2034123100
+#2035010100-2044123100
+#2045010100-2054123100
+#2055010100-2064123100
+#2065010100-2074123100
+#2075010100-2084123100
+#2085010100-2094123100
+#2095010100-2100123100
+#)
+
+# ----------------------------
+# Temp workspace
+# ----------------------------
+TMPDIR=${OUTDIR}/tmp_${GROUP}_${LABEL}
+mkdir -p ${TMPDIR}
+
+# ----------------------------
+# Parallel variable processing
+# ----------------------------
+MAX_JOBS=2
+COUNT=0
+
+for VAR in "${VARS[@]}"; do
+(
+    echo "Processing ${VAR}..."
+
+    FILELIST=""
+    for YR in "${YEARS[@]}"; do
+        FILELIST="${FILELIST} ${BASE}/${VAR}/*LE2-${GROUP}.${EM}*.${YR}.nc"
+    done
+
+    echo "Files to concatenate for ${VAR}:"
+    ls ${BASE}/${VAR}/*LE2-${GROUP}.${EM}*.${YEARS[0]}.nc || echo "WARNING: No files found"
+
+    ncrcat -O --thr_nbr=2 ${FILELIST} ${TMPDIR}/${VAR}.nc
+
+) &
+
+((COUNT++))
+if (( COUNT % MAX_JOBS == 0 )); then
+    wait
+fi
+
+done
+wait
+
+echo "Finished: File Creation"
+
+echo "Waiting before merge..."
+wait
+sleep 5
+
+# ----------------------------
+# Merge variables
+# ----------------------------
+echo "Merging variables..."
+FIRST_VAR=${VARS[0]}
+cp ${TMPDIR}/${FIRST_VAR}.nc ${OUTFILE}
+ncatted -a _FillValue,lat,d,, ${OUTFILE}
+ncatted -a _FillValue,lon,d,, ${OUTFILE}
+
+# for VAR in "${VARS[@]:1:3}"; do
+
+for VAR in "${VARS[@]:1}"; do
+    echo " Merging ${EM} ${VAR} to ${FIRST_VAR} "
+    echo " === "
+    echo " Start to Remove lat from ${EM} ${VAR}"
+    ncatted -a _FillValue,lat,d,, ${TMPDIR}/${VAR}.nc
+    echo " Removed lat from ${EM} ${VAR} "
+    echo " +*===*+ "
+    echo " Start to Remove lon from ${EM} ${VAR} "
+    ncatted -a _FillValue,lon,d,, ${TMPDIR}/${VAR}.nc
+    echo " Remove lon from ${EM} ${VAR} "
+    echo " +*===*+ "
+    echo " Start to Append ${EM} ${VAR} to ${FIRST_VAR}"
+    #ncks -A --thr_nbr=2 ${TMPDIR}/${VAR}.nc ${OUTFILE}
+    ncks -A -v ${VAR} --thr_nbr=2 ${TMPDIR}/${VAR}.nc ${OUTFILE}
+    echo " Finished Merging ${EM} ${VAR} to ${FIRST_VAR} "
+    echo " +*+*+ "
+done
+
+echo "Finished: Merging variables"
+
+
+echo "Collect certain variables: VARS and coordinates"
+
+# ----------------------------
+# Selecting variables and coordinates
+# ----------------------------
+echo "Selecting variables and coordinates..."
+
+# Keep only VARS + coordinates
+#ncks -O -v PRECT,TMQ,IVT,PSL,time,lat,lon ${OUTFILE} ${OUTFILE}
+
+ncks -O -v PRECT,TMQ,IVT,PSL,U850,V850,U200,OMEGA500,time,lat,lon ${OUTFILE} ${OUTFILE}
+
+
+
+echo "Finished: Selecting variables and coordinates for ${EM}"
+
+
+echo "Finished file: ${OUTFILE}"
+
+# ----------------------------
+# Cleanup
+# ----------------------------
+#rm -r ${TMPDIR}
+
+echo "================="
+echo "✩₊˚.⋆☾⋆⁺₊✧"
+echo "================="
+
+
